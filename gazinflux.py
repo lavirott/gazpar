@@ -6,11 +6,11 @@ import sys
 import datetime
 import schedule
 import time
-import locale
 from dateutil.relativedelta import relativedelta
 from influxdb import InfluxDBClient
 import gazpar
 import json
+import paho.mqtt.client as mqtt
 
 import argparse
 import logging
@@ -18,8 +18,8 @@ import pprint
 from envparse import env
 
 PFILE = "/.params"
-DOCKER_MANDATORY_VARENV=['GRDF_USERNAME','GRDF_PASSWORD','INFLUXDB_HOST','INFLUXDB_DATABASE','INFLUXDB_USERNAME','INFLUXDB_PASSWORD']
-DOCKER_OPTIONAL_VARENV=['INFLUXDB_PORT', 'INFLUXDB_SSL', 'INFLUXDB_VERIFY_SSL']
+DOCKER_MANDATORY_VARENV=['GRDF_USERNAME','GRDF_PASSWORD','INFLUXDB_HOST','INFLUXDB_DATABASE','INFLUXDB_USERNAME','INFLUXDB_PASSWORD','MQTT_HOST']
+DOCKER_OPTIONAL_VARENV=['INFLUXDB_PORT', 'INFLUXDB_SSL', 'INFLUXDB_VERIFY_SSL','MQTT_PORT','MQTT_KEEPALIVE','MQTT_TOPIC']
 
 
 # Sub to return format wanted by linky.py
@@ -38,7 +38,11 @@ def _openParams(pfile):
                            'username': env(DOCKER_MANDATORY_VARENV[4]),
                            'password': env(DOCKER_MANDATORY_VARENV[5]),
                            'ssl': env.bool(DOCKER_OPTIONAL_VARENV[1], default=True),
-                           'verify_ssl': env.bool(DOCKER_OPTIONAL_VARENV[2], default=True)}}
+                           'verify_ssl': env.bool(DOCKER_OPTIONAL_VARENV[2], default=True)},
+                'mqtt': {'host': env(DOCKER_MANDATORY_VARENV[6]),
+                         'port': env.int(DOCKER_OPTIONAL_VARENV[3], default=1883),
+                         'keepalive': env.int(DOCKER_OPTIONAL_VARENV[4], default=60),
+                         'topic': env(DOCKER_OPTIONAL_VARENV[5], default='gazpar/')}}
     # Try to load .params then programs_dir/.params
     elif os.path.isfile(os.getcwd() + pfile):
         p = os.getcwd() + pfile
@@ -87,21 +91,53 @@ def _getStartDateInfluxDb(client,measurement):
     datarr = datar[0].split('-')
     return datarr
 
+def _createDataToPublish(resGrdf, startTimestamp, endDate):
+    # When we have all values let's start parse data and pushing it to InfluxDB
+    jsonData = []
+    for d in resGrdf:
+        t = datetime.datetime.strptime(d['date'] + " 12:00", '%d-%m-%Y %H:%M')
+        logging.info(("found value : {0:3} kWh / {1:7.2f} m3 at {2}").format(d['kwh'], d['mcube'], t.strftime('%Y-%m-%dT%H:%M:%SZ')))
+        if t.timestamp() > startTimestamp:
+            logging.info(("value added to jsonData as {0} > {1}").format(t.strftime('%Y-%m-%d %H:%M'), datetime.datetime.fromtimestamp(startTimestamp).strftime('%Y-%m-%d %H:%M')))
+            jsonData.append({
+                           "measurement": "Gazpar",
+                           "tags": {
+                               "fetch_date" : endDate
+                           },
+                           "time": t.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                           "fields": {
+                               "kWh": d['kwh'],
+                               "mcube": d['mcube']
+                           }
+                         })
+        else:
+            logging.info(("value NOT added to jsonData as {0} > {1}").format(t.timestamp(), startTimestamp))
+    return jsonData
+        
 # Let's start here !
-
 def main():
+    clientInflux = None
+    clientMqtt = None
     params = _openParams(PFILE)
 
     # Try to log in InfluxDB Server
     try:
         logging.info("logging in InfluxDB Server Host %s...", params['influx']['host'])
-        client = InfluxDBClient(params['influx']['host'], params['influx']['port'],
+        clientInflux = InfluxDBClient(params['influx']['host'], params['influx']['port'],
                     params['influx']['username'], params['influx']['password'],
                     params['influx']['db'], ssl=params['influx']['ssl'], verify_ssl=params['influx']['verify_ssl'])
         logging.info("logged in InfluxDB Server Host %s succesfully", params['influx']['host'])
     except:
         logging.error("unable to login on %s", params['influx']['host'])
         sys.exit(1)
+
+      # Try to log in MQTT
+    try:
+        logging.info("logging in MQTT %s...", params['mqtt']['host'])
+        clientMqtt = mqtt.Client()
+        clientMqtt.connect(params['mqtt']['host'], params['mqtt']['port'], params['mqtt']['keepalive'])
+    except:
+        logging.error("unable to connect to %s", params['mqtt']['host'])
 
     # Try to log in GRDF API
     try:
@@ -111,17 +147,16 @@ def main():
     except:
         logging.error("unable to login on %s", gazpar.API_BASE_URI)
         sys.exit(1)
-
-
+   
     # Calculate start/endDate and firstTS for data to request/parse
     if args.last:
         logging.info("looking for last value date on InfluxDB 'conzo_gaz' on host %s...", params['influx']['host'])
-        startDate = _getStartDateInfluxDb(client,"conso_gaz")
-        logging.info("found last fetch date %s on InfluxDB 'conzo_gaz' on host %s...", startDate[2]+"/"+startDate[1]+"/"+startDate[0], params['influx']['host'])
+        startDate = _getStartDateInfluxDb(clientInflux, "Gazpar")
+        logging.info("found last fetch date %s on InfluxDB 'Gazpar' on host %s...", startDate[2]+"/"+startDate[1]+"/"+startDate[0], params['influx']['host'])
         firstTS =  _getDateTS(int(startDate[0]),int(startDate[1]),int(startDate[2]),12,0)
         startDate = startDate[2]+"/"+startDate[1]+"/"+startDate[0]
     else :
-        logging.warning("GRDF will perhaps has not all data for the last %s days ",args.days)
+        logging.warning("GRDF may not all the data for the last %s days ",args.days)
         startDate = _getStartDate(datetime.date.today(), args.days)
         firstTS =  _getStartTS(args.days)
 
@@ -131,48 +166,36 @@ def main():
     # Try to get data from GRDF API
     resGrdf = gazpar.get_data_per_day(token, startDate, endDate)
     try:
-        logging.info("get Data from GRDF from {0} to {1}".format(startDate, endDate))
+        logging.info("get data from GRDF from {0} to {1}".format(startDate, endDate))
         # Get result from GRDF by day
         resGrdf = gazpar.get_data_per_day(token, startDate, endDate)
-
         if (args.verbose):
             pp.pprint(resGrdf)
-
     except:
         logging.error("unable to get data from GRDF")
         sys.exit(1)
 
-    # When we have all values let's start parse data and pushing it
-    jsonInflux = []
-    i = 0
-    for d in resGrdf:
-        t = datetime.datetime.strptime(d['date'] + " 12:00", '%d-%m-%Y %H:%M')
-        logging.info(("found value : {0:3} kWh / {1:7.2f} m3 at {2}").format(d['kwh'], d['mcube'], t.strftime('%Y-%m-%dT%H:%M:%SZ')))
-        if t.timestamp() > firstTS:
-            logging.info(("value added to jsonInflux as {0} > {1}").format(t.strftime('%Y-%m-%d %H:%M'), datetime.datetime.fromtimestamp(firstTS).strftime('%Y-%m-%d %H:%M')))
-            jsonInflux.append({
-                           "measurement": "conso_gaz",
-                           "tags": {
-                               "fetch_date" : endDate
-                           },
-                           "time": t.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                           "fields": {
-                               "kwh": d['kwh'],
-                               "mcube": d['mcube']
-                           }
-                         })
-        else:
-            logging.info(("value NOT added to jsonInflux as {0} > {1}").format(t.timestamp(), firstTS))
-        i=+1
+    jsonData = _createDataToPublish(resGrdf, firstTS, endDate)
     if (args.verbose):
-        pp.pprint(jsonInflux)
-    logging.info("trying to write {0} points to influxDB".format(len(jsonInflux)))
+        pp.pprint(jsonData)
+
+    logging.info("trying to write {0} points to influxDB".format(len(jsonData)))
     try:
-        client.write_points(jsonInflux)
+        clientInflux.write_points(jsonData)
     except:
         logging.info("unable to write data points to influxdb")
     else:
         logging.info("done")
+
+    if clientMqtt:
+        logging.info("trying to write {0} points to MQTT".format(len(jsonData)))
+        try:
+            for data in jsonData:
+                clientMqtt.publish(params['mqtt']['topic'] + 'json', json.dumps(data), 0)
+        except:
+            logging.info("unable to write data to mqtt")
+        else:
+            logging.info("done")
 
 
 if __name__ == "__main__":
