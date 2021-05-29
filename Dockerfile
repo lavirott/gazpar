@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 COPY .params .
 
-CMD ["python3", "./gazinflux.py", "--schedule", "06:00"]
+CMD ["python3", "./gazinflux.py", "--days", "5"]
