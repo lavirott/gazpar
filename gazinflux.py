@@ -18,7 +18,7 @@ import pprint
 from envparse import env
 
 PFILE = "/.params"
-DOCKER_MANDATORY_VARENV=['GRDF_USERNAME','GRDF_PASSWORD','INFLUXDB_HOST','INFLUXDB_DATABASE','INFLUXDB_USERNAME','INFLUXDB_PASSWORD','MQTT_HOST']
+DOCKER_MANDATORY_VARENV=['GRDF_USERNAME','GRDF_PASSWORD','GRDF_PCE','INFLUXDB_HOST','INFLUXDB_DATABASE','INFLUXDB_USERNAME','INFLUXDB_PASSWORD','MQTT_HOST']
 DOCKER_OPTIONAL_VARENV=['INFLUXDB_PORT', 'INFLUXDB_SSL', 'INFLUXDB_VERIFY_SSL','MQTT_PORT','MQTT_KEEPALIVE','MQTT_TOPIC']
 
 
@@ -31,15 +31,16 @@ def _openParams(pfile):
     # Try to load environment variables
     if set(DOCKER_MANDATORY_VARENV).issubset(set(os.environ)):
         return {'grdf': {'username': env(DOCKER_MANDATORY_VARENV[0]),
-                         'password': env(DOCKER_MANDATORY_VARENV[1])},
-                'influx': {'host': env(DOCKER_MANDATORY_VARENV[2]),
+                         'password': env(DOCKER_MANDATORY_VARENV[1]),
+                         'pce': env(DOCKER_MANDATORY_VARENV[2])},
+                'influx': {'host': env(DOCKER_MANDATORY_VARENV[3]),
                            'port': env.int(DOCKER_OPTIONAL_VARENV[0], default=8086),
-                           'db': env(DOCKER_MANDATORY_VARENV[3]),
-                           'username': env(DOCKER_MANDATORY_VARENV[4]),
-                           'password': env(DOCKER_MANDATORY_VARENV[5]),
+                           'db': env(DOCKER_MANDATORY_VARENV[4]),
+                           'username': env(DOCKER_MANDATORY_VARENV[5]),
+                           'password': env(DOCKER_MANDATORY_VARENV[6]),
                            'ssl': env.bool(DOCKER_OPTIONAL_VARENV[1], default=True),
                            'verify_ssl': env.bool(DOCKER_OPTIONAL_VARENV[2], default=True)},
-                'mqtt': {'host': env(DOCKER_MANDATORY_VARENV[6]),
+                'mqtt': {'host': env(DOCKER_MANDATORY_VARENV[7]),
                          'port': env.int(DOCKER_OPTIONAL_VARENV[3], default=1883),
                          'keepalive': env.int(DOCKER_OPTIONAL_VARENV[4], default=60),
                          'topic': env(DOCKER_OPTIONAL_VARENV[5], default='gazpar/')}}
@@ -95,19 +96,17 @@ def _createDataToPublish(resGrdf, startTimestamp, endDate):
     # When we have all values let's start parse data and pushing it to InfluxDB
     jsonData = []
     for d in resGrdf:
-        t = datetime.datetime.strptime(d['date'] + " 12:00", '%d-%m-%Y %H:%M')
-        logging.info(("found value : {0:3} kWh / {1:7.2f} m3 at {2}").format(d['kwh'], d['mcube'], t.strftime('%Y-%m-%dT%H:%M:%SZ')))
+        t = datetime.datetime.strptime(d['journeeGaziere'] + " 12:00", '%Y-%m-%d %H:%M')
+        logging.info(("found value : {0:3} kWh / {1:7.2f} m3 at {2}").format(d['energieConsomme'], d['volumeBrutConsomme'], t.strftime('%Y-%m-%dT%H:%M:%SZ')))
         if t.timestamp() > startTimestamp:
             logging.info(("value added to jsonData as {0} > {1}").format(t.strftime('%Y-%m-%d %H:%M'), datetime.datetime.fromtimestamp(startTimestamp).strftime('%Y-%m-%d %H:%M')))
             jsonData.append({
                            "measurement": "Gazpar",
-                           "tags": {
-                               "fetch_date" : endDate
-                           },
                            "time": t.strftime('%Y-%m-%dT%H:%M:%SZ'),
                            "fields": {
-                               "kWh": d['kwh'],
-                               "mcube": d['mcube']
+                               "value": d['energieConsomme'],
+                               "kWh": d['energieConsomme'],
+                               "mcube": d['volumeBrutConsomme']
                            }
                          })
         else:
@@ -131,22 +130,13 @@ def main():
         logging.error("unable to login on %s", params['influx']['host'])
         sys.exit(1)
 
-      # Try to log in MQTT
+    # Try to log in MQTT
     try:
         logging.info("logging in MQTT %s...", params['mqtt']['host'])
         clientMqtt = mqtt.Client()
         clientMqtt.connect(params['mqtt']['host'], params['mqtt']['port'], params['mqtt']['keepalive'])
     except:
         logging.error("unable to connect to %s", params['mqtt']['host'])
-
-    # Try to log in GRDF API
-    try:
-        logging.info("logging in GRDF URI %s...", gazpar.API_BASE_URI)
-        token = gazpar.login(params['grdf']['username'], params['grdf']['password'])
-        logging.info("logged in successfully!")
-    except:
-        logging.error("unable to login on %s", gazpar.API_BASE_URI)
-        sys.exit(1)
    
     # Calculate start/endDate and firstTS for data to request/parse
     if args.last:
@@ -156,30 +146,29 @@ def main():
         firstTS =  _getDateTS(int(startDate[0]),int(startDate[1]),int(startDate[2]),12,0)
         startDate = startDate[2]+"/"+startDate[1]+"/"+startDate[0]
     else :
-        logging.warning("GRDF may not all the data for the last %s days ",args.days)
+        logging.warning("GRDF may not all the data for the last %s days ", args.days)
         startDate = _getStartDate(datetime.date.today(), args.days)
         firstTS =  _getStartTS(args.days)
 
     logging.info("will use %s as firstDate and %s as startDate", firstTS, startDate)
     endDate = _dayToStr(datetime.date.today())
 
-    # Try to get data from GRDF API
-    resGrdf = gazpar.get_data_per_day(token, startDate, endDate)
     try:
-        logging.info("get data from GRDF from {0} to {1}".format(startDate, endDate))
-        # Get result from GRDF by day
-        resGrdf = gazpar.get_data_per_day(token, startDate, endDate)
-        if (args.verbose):
-            pp.pprint(resGrdf)
-    except:
-        logging.error("unable to get data from GRDF")
-        sys.exit(1)
+        grdf_client = gazpar.Gazpar(params['grdf']['username'], params['grdf']['password'], params['grdf']['pce'])
+        resGrdf = grdf_client.get_consumption()
+    except Exception as exc:
+        strErrMsg = "[Error] " + str(exc)
+        logging.error(strErrMsg)
+        print(strErrMsg)
+        return False
+    if (args.verbose):
+        pp.pprint(resGrdf)
 
-    jsonData = _createDataToPublish(resGrdf, firstTS, endDate)
+    jsonData = _createDataToPublish(resGrdf['releves'], firstTS, endDate)
     if (args.verbose):
         pp.pprint(jsonData)
-
     logging.info("trying to write {0} points to influxDB".format(len(jsonData)))
+
     try:
         clientInflux.write_points(jsonData)
     except:
@@ -201,14 +190,14 @@ def main():
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d",  "--days",    type=int,
+    parser.add_argument("-d", "--days", type=int,
                         help="Number of days from now to download", default=1)
-    parser.add_argument("-l",  "--last",    action="store_true",
+    parser.add_argument("-l", "--last", action="store_true",
                         help="Check from InfluxDb the number of missing days", default=False)
-    parser.add_argument("-v",  "--verbose", action="store_true",
+    parser.add_argument("-v", "--verbose", action="store_true",
                         help="More verbose", default=False)
-    parser.add_argument(
-        "-s", "--schedule",   help="Schedule the launch of the script at hh:mm everyday")
+    parser.add_argument("-s", "--schedule", 
+                        help="Schedule the launch of the script at hh:mm everyday")
     args = parser.parse_args()
 
     pp = pprint.PrettyPrinter(indent=4)

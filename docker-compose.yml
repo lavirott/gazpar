@@ -1,22 +1,27 @@
-version: "3.7"
+version: "3.3"
 services:
-  gazinflux:
-    container_name: gazinflux
-    image: gazpar:latest
-    build:
-      context: .
-    restart: unless-stopped
-    environment:
-      - GRDF_USERNAME=test@email.com
-      - GRDF_PASSWORD=password
-      - INFLUXDB_HOST=host
-      - INFLUXDB_DATABASE=gazpar
-      - INFLUXDB_USERNAME=username
-      - INFLUXDB_PASSWORD=password
-      # Optional:
-      #- INFLUXDB_PORT=8086
-      #- INFLUXDB_SSL=true
-      #- INFLUXDB_VERIFY_SSL=true
-    # If influxdb is managed in the same docker-compose file, add this section
-    #depends_on:
-    #  - influxdb
+    gazpar:
+        container_name: gazpar
+        image: gazpar:latest
+        build: .
+        restart: unless-stopped
+        volumes:
+            - "/etc/localtime:/etc/localtime:ro"
+            - "/etc/timezone:/etc/timezone:ro"
+        command: ["gazinflux.py", "--days", "10", "--schedule", "12:00"]
+        restart: unless-stopped
+        # environment:
+        #     - GRDF_USERNAME=username
+        #     - GRDF_PASSWORD=password
+        #     - GRDF_PCE=123456789ABCDE
+        #     - INFLUXDB_HOST=192.168.0.2
+        #     - INFLUXDB_DATABASE=db_name
+        #     - INFLUXDB_USERNAME=db_username
+        #     - INFLUXDB_PORT=8086
+        #     - INFLUXDB_SSL=false
+        #     - INFLUXDB_VERIFY_SSL=false
+        #     - INFLUXDB_PASSWORD=db_password
+        #     - MQTT_HOST=192.168.0.22
+        #     - MQTT_PORT=1883
+        #     - MQTT_KEEPALIVE=60
+        #     - MQTT_TOPIC=topic/gazpar

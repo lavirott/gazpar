@@ -1,13 +1,14 @@
 {
     "grdf": {
         "username": "",
-        "password": ""
+        "password": "",
+        "pce": ""
     },
     "influx": {
         "host": "",
         "port": 8086,
-        "db": "gazpar",
-        "username": "gazpar",
+        "db": "",
+        "username": "",
         "password": "",
         "ssl": true,
         "verify_ssl": true

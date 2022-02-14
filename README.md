@@ -1,12 +1,11 @@
-# gazinflux
+# Gazpar
 
-## Externals / Thanks
+This project has bee inspired by two sources:
+- [frtz13](https://github.com/frtz13/homeassistant_gazpar_cl_sensor): user for Gazpaz class to connect to GRDF website
+- [beufanet](https://github.com/beufanet/gazpar): used for InfluxDB connexion (based on empierre)
+- [empierre](https://github.com/empierre/domoticz_gaspar)
 
-The project has been inspired by job done by [empierre](https://github.com/empierre) on project [domoticz_gazpar available on Github](https://github.com/empierre/domoticz_gaspar). I modified a bit the code to work and fit my needs
-
-## Grafana example
-
-![Grafana Dashboard](https://raw.githubusercontent.com/beufanet/gazpar/master/grafana.png)
+I modified the code to adapt it to personal needs.
 
 ## Requirements
 
@@ -17,9 +16,9 @@ The project has been inspired by job done by [empierre](https://github.com/empie
 
 If you want to debug, please set level=logging.INFO to level=logging.DEBUG
 
-### GRDF / GazPAr
+### GRDF / Gazpar
 
-Verify you have gazpar data available on [GRDF Portal](https://monespace.grdf.fr/monespace/particulier/consommation/tableau-de-bord)
+Verify you have Gazpar data available on [GRDF Portal](https://monespace.grdf.fr/client/particulier/accueil)
 
 Please also remember data provided is per day, if you want to improve with timed consumption and premium account, please submit MR with cool code. 
 
@@ -66,7 +65,7 @@ Example : 5 years (1825d)
 It is possible to supply the configuration when launching the docker container, _ie_:
 
 ```bash
-docker run -e GRDF_USERNAME=test@email.com -e GRDF_PASSWORD=password -e INFLUXDB_HOST=192.168.1.99 -e INFLUXDB_DATABASE=gazpar -e INFLUXDB_USERNAME=user -e INFLUXDB_PASSWORD=password -e INFLUXDB_SSL=false -e INFLUXDB_VERIFY_SSL=false gazpar:latest
+docker run -e GRDF_USERNAME=test@email.com -e GRDF_PASSWORD=password GRDF_PCE=123456789ABCE -e INFLUXDB_HOST=192.168.1.99 -e INFLUXDB_DATABASE=gazpar -e INFLUXDB_USERNAME=user -e INFLUXDB_PASSWORD=password -e INFLUXDB_SSL=false -e INFLUXDB_VERIFY_SSL=false gazpar:latest
 ```
 
 It is also possible (and easier) to put the configuration in the `docker-compose.yml` file.
@@ -85,7 +84,8 @@ Copy .params.example to .params and fill with your own values :
     "grdf":
     {
         "username": 	  "",
-        "password": 	  ""
+        "password": 	  "",
+        "pce":          ""
     },
     "influx":
     {
@@ -105,9 +105,9 @@ Copy .params.example to .params and fill with your own values :
 You just have to create dashboard with kind of queries :
 
 ```
-SELECT mean("kwh") FROM "conso_gaz" WHERE $timeFilter GROUP BY time($__interval)
+SELECT mean("kwh") FROM "Gazpar" WHERE $timeFilter GROUP BY time($__interval)
 
-SELECT mean("mcube") FROM "conso_gaz" WHERE $timeFilter GROUP BY time($__interval)
+SELECT mean("mcube") FROM "Gaspar" WHERE $timeFilter GROUP BY time($__interval)
 ```
 
 ### Script usage
@@ -124,19 +124,10 @@ If you want it to be scheduled, you can run the script like this (for it to be s
 python3 gazinflux.py --last --schedule 06:00
 ```
 
-#### Launching with docker
+#### Launching with docker-compose
 
 You can either use the `docker-compose.yml` file to run the script:
 
 ```bash
 docker-compose up -d --build
-```
-
-Or run the container manually:
-
-```bash
-#Build the image
-docker build -t gazpar:latest .
-#Run it
-docker run -d gazpar:latest
 ```
